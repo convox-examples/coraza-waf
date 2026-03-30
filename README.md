@@ -164,29 +164,27 @@ This example ships with a `config.d/convox-exclusions.conf` that suppresses fals
 
 ### Adding Your Own Exclusions
 
-Edit `waf/custom-rules/application-exclusions.conf` to add exclusions specific to your application. The file includes commented-out examples for common patterns:
+Edit `waf/custom-rules/application-exclusions.conf` to add exclusions specific to your application. The file includes commented-out examples for common patterns.
 
-**Exclude a rule for a specific URL path** — when an endpoint legitimately triggers a rule (e.g., a search endpoint with complex query strings):
+**Important:** Use single-line format for SecRule directives. Backslash line continuations can fail silently in Coraza depending on file encoding and trailing whitespace.
+
+**Exclude third-party cookies from inspection** — CloudFront signed cookies, Google Analytics (`_ga`), and Cloudflare (`_cf*`) cookies contain base64, timestamps, and special characters that trigger SQL injection and RCE rules as false positives:
 
 ```
-SecRule REQUEST_URI "@beginsWith /api/search" \
-    "id:1000100,\
-    phase:1,\
-    pass,\
-    nolog,\
-    ctl:ruleRemoveById=942100"
+SecRule REQUEST_URI "@rx .*" "id:1000100,phase:1,pass,nolog,ctl:ruleRemoveTargetById=942420;REQUEST_COOKIES,ctl:ruleRemoveTargetById=942421;REQUEST_COOKIES,ctl:ruleRemoveTargetById=932240;REQUEST_COOKIES"
+```
+
+**Exclude a rule for a specific URL path** — when an endpoint legitimately triggers a rule (e.g., a search endpoint or a socket.io endpoint):
+
+```
+SecRule REQUEST_URI "@beginsWith /api/search" "id:1000101,phase:1,pass,nolog,ctl:ruleRemoveById=942100"
+SecRule REQUEST_URI "@beginsWith /socket.io/" "id:1000102,phase:1,pass,nolog,ctl:ruleRemoveById=921180"
 ```
 
 **Exclude a rule for a specific parameter** — when a form field contains content that looks like an attack (e.g., a rich text editor that sends HTML):
 
 ```
-SecRule REQUEST_URI "@beginsWith /api/posts" \
-    "id:1000101,\
-    phase:1,\
-    pass,\
-    nolog,\
-    ctl:ruleRemoveTargetById=941100;ARGS:body,\
-    ctl:ruleRemoveTargetById=941160;ARGS:body"
+SecRule REQUEST_URI "@beginsWith /api/posts" "id:1000103,phase:1,pass,nolog,ctl:ruleRemoveTargetById=941100;ARGS:body,ctl:ruleRemoveTargetById=941160;ARGS:body"
 ```
 
 **Blanket-remove a rule entirely** — as a last resort when a rule causes widespread false positives:
@@ -195,7 +193,7 @@ SecRule REQUEST_URI "@beginsWith /api/posts" \
 SecRuleRemoveById 920300
 ```
 
-Note: if your exclusion uses `ctl:ruleRemoveById` or `ctl:ruleRemoveTargetById`, move it to `waf/config.d/` instead. Blanket removals with `SecRuleRemoveById` work from either directory.
+Note: if your exclusion uses `ctl:ruleRemoveById` or `ctl:ruleRemoveTargetById`, move it to `waf/config.d/` instead. Blanket removals with `SecRuleRemoveById` work from either directory. Always use single-line format — backslash line continuations can fail silently.
 
 ### WAF Directory Structure
 
