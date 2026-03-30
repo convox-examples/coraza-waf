@@ -126,7 +126,7 @@ Replace the example backend with your own service. The only changes needed are i
 ```yaml
 services:
   waf:
-    image: ghcr.io/coreruleset/coraza-crs:caddy-alpine
+    build: ./waf
     port: 8080
     health: /
     environment:
@@ -147,21 +147,72 @@ Point `BACKEND` to your service name and port. Convox configures DNS search doma
 
 ## Custom Rules
 
-To add custom rule exclusions or additional rules, extend the base image:
+The WAF image supports two directories for customization, loaded at different times:
 
-```dockerfile
-FROM ghcr.io/coreruleset/coraza-crs:caddy-alpine
-COPY custom-rules/ /opt/coraza/rules.d/
+| Directory | Loaded | Use For |
+|-----------|--------|---------|
+| `/opt/coraza/config.d/` | **Before** CRS rules | Rule exclusions (`ctl:ruleRemoveById`) |
+| `/opt/coraza/rules.d/` | **After** CRS rules | Additional rules, blanket removals |
+
+This distinction matters: conditional exclusions using `ctl:ruleRemoveById` must go in `config.d/` so they load before the rules they're suppressing. Putting them in `rules.d/` will not work.
+
+### Included Exclusions
+
+This example ships with a `config.d/convox-exclusions.conf` that suppresses false positives from normal Convox platform behavior:
+
+- **Rule 920350** (Host header is numeric IP) — Kubernetes health checks hit the pod IP directly, so the Host header is always a numeric IP. This is expected behavior, not an attack. The exclusion only applies to requests with a `kube-probe` user-agent so normal traffic is unaffected.
+
+### Adding Your Own Exclusions
+
+Edit `waf/custom-rules/application-exclusions.conf` to add exclusions specific to your application. The file includes commented-out examples for common patterns:
+
+**Exclude a rule for a specific URL path** — when an endpoint legitimately triggers a rule (e.g., a search endpoint with complex query strings):
+
+```
+SecRule REQUEST_URI "@beginsWith /api/search" \
+    "id:1000100,\
+    phase:1,\
+    pass,\
+    nolog,\
+    ctl:ruleRemoveById=942100"
 ```
 
-Any `.conf` files in `/opt/coraza/rules.d/` are loaded alongside the CRS rules. Then reference the build in your `convox.yml`:
+**Exclude a rule for a specific parameter** — when a form field contains content that looks like an attack (e.g., a rich text editor that sends HTML):
 
-```yaml
-services:
-  waf:
-    build: ./waf
-    port: 8080
-    # ...
+```
+SecRule REQUEST_URI "@beginsWith /api/posts" \
+    "id:1000101,\
+    phase:1,\
+    pass,\
+    nolog,\
+    ctl:ruleRemoveTargetById=941100;ARGS:body,\
+    ctl:ruleRemoveTargetById=941160;ARGS:body"
+```
+
+**Blanket-remove a rule entirely** — as a last resort when a rule causes widespread false positives:
+
+```
+SecRuleRemoveById 920300
+```
+
+Note: if your exclusion uses `ctl:ruleRemoveById` or `ctl:ruleRemoveTargetById`, move it to `waf/config.d/` instead. Blanket removals with `SecRuleRemoveById` work from either directory.
+
+### WAF Directory Structure
+
+```
+waf/
+├── Dockerfile                              # Extends the base Coraza CRS image
+├── config.d/
+│   └── convox-exclusions.conf              # Platform exclusions (loaded before CRS)
+└── custom-rules/
+    └── application-exclusions.conf         # Your app-specific exclusions (loaded after CRS)
+```
+
+On startup you'll see confirmation that both directories were loaded:
+
+```
+- User configuration files loaded from /opt/coraza/config.d
+- User defined rule sets loaded from /opt/coraza/rules.d
 ```
 
 ## Project Structure
@@ -169,6 +220,12 @@ services:
 ```
 .
 ├── convox.yml              # Convox deployment configuration
+├── waf/
+│   ├── Dockerfile          # Extends Coraza CRS with custom rules
+│   ├── config.d/           # Rule exclusions (loaded before CRS rules)
+│   │   └── convox-exclusions.conf
+│   └── custom-rules/       # Additional rules (loaded after CRS rules)
+│       └── application-exclusions.conf
 └── backend/
     ├── Dockerfile          # Simple Node.js backend
     └── server.js           # Example application server

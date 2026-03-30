@@ -1,6 +1,6 @@
 services:
   waf:
-    image: ghcr.io/coreruleset/coraza-crs:caddy-alpine
+    build: ./waf
     port: 8080
     health: /
     environment:
