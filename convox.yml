@@ -1,0 +1,22 @@
+services:
+  waf:
+    image: ghcr.io/coreruleset/coraza-crs:caddy-alpine
+    port: 8080
+    health: /
+    environment:
+      - CORAZA_RULE_ENGINE=DetectionOnly
+      - PARANOIA=1
+      - BACKEND=web:3000
+      - PORT=8080
+    scale:
+      count: 1
+      cpu: 256
+      memory: 512
+  web:
+    build: ./backend
+    port: 3000
+    internal: true
+    scale:
+      count: 1
+      cpu: 256
+      memory: 256
