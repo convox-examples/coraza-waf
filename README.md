@@ -79,10 +79,11 @@ In `DetectionOnly` mode (the default in this example), all requests pass through
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CORAZA_RULE_ENGINE` | `DetectionOnly` | `DetectionOnly` logs without blocking. `On` enforces rules. |
-| `PARANOIA` | `1` | CRS paranoia level (1-4). Higher = more rules, more false positives. |
 | `BACKEND` | `web:3000` | Backend service address. Use the Convox service name and port. |
 | `PORT` | `8080` | Port the WAF container listens on. |
 | `ANOMALY_INBOUND` | `5` | Anomaly score threshold before a request is blocked. |
+
+**Note on paranoia level:** The `PARANOIA` and `EXECUTING_PARANOIA` environment variables in the coraza-crs-docker image are broken for CRS v4 — the entrypoint scripts reference old CRS v3 variable names that no longer exist. This example sets the paranoia level directly in `waf/config.d/convox-exclusions.conf` instead. To change the paranoia level, edit that file — do not rely on the `PARANOIA` env var.
 
 ### Recommended Rollout
 
@@ -105,9 +106,9 @@ convox logs -a coraza-waf | grep "transaction"
 convox env set CORAZA_RULE_ENGINE=On -a coraza-waf
 ```
 
-5. **Raise paranoia level** once stable:
-```bash
-convox env set PARANOIA=2 -a coraza-waf
+5. **Raise paranoia level** once stable — edit `waf/config.d/convox-exclusions.conf` and change both values to `2`, then redeploy:
+```
+SecAction "id:1000002,phase:1,nolog,pass,t:none,setvar:tx.blocking_paranoia_level=2,setvar:tx.detection_paranoia_level=2"
 ```
 
 ### Paranoia Levels
