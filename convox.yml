@@ -6,6 +6,8 @@ services:
     environment:
       - CORAZA_RULE_ENGINE=DetectionOnly
       - PARANOIA=1
+      - BLOCKING_PARANOIA=1
+      - DETECTION_PARANOIA=1
       - BACKEND=web:3000
       - PORT=8080
     scale:
