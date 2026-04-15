@@ -2,9 +2,13 @@ services:
   waf:
     build: ./waf
     port: 8080
-    health: /
+    health:
+      path: /health
+      interval: 10
+      timeout: 9
     environment:
-      - CORAZA_RULE_ENGINE=DetectionOnly
+      - CORAZA_RULE_ENGINE=On
+      - ANOMALY_INBOUND=999999
       - PARANOIA=1
       - BLOCKING_PARANOIA=1
       - DETECTION_PARANOIA=1
