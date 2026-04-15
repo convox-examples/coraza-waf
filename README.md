@@ -70,7 +70,7 @@ curl -sk "$WAF_URL/?q=<script>alert(1)</script>"
 curl -sk "$WAF_URL/.env"
 ```
 
-In `DetectionOnly` mode (the default in this example), all requests pass through but malicious ones are logged. Switch to enforcement mode to start blocking.
+This example starts in **tuning mode** — the rule engine is on but the anomaly score threshold is set high enough that nothing gets blocked. Malicious requests are logged so you can tune out false positives before enabling enforcement.
 
 ## Configuration
 
@@ -78,35 +78,37 @@ In `DetectionOnly` mode (the default in this example), all requests pass through
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CORAZA_RULE_ENGINE` | `DetectionOnly` | `DetectionOnly` logs without blocking. `On` enforces rules. |
+| `CORAZA_RULE_ENGINE` | `On` | Must be `On` for paranoia level gating to work correctly. See note below. |
+| `ANOMALY_INBOUND` | `999999` | Anomaly score threshold before a request is blocked. Set to `999999` for tuning (log only), `5` for enforcement. |
 | `BACKEND` | `web:3000` | Backend service address. Use the Convox service name and port. |
 | `PORT` | `8080` | Port the WAF container listens on. |
-| `ANOMALY_INBOUND` | `5` | Anomaly score threshold before a request is blocked. |
 
-**Note on paranoia level:** The `PARANOIA` and `EXECUTING_PARANOIA` environment variables in the coraza-crs-docker image are broken for CRS v4 — the entrypoint scripts reference old CRS v3 variable names that no longer exist. This example sets the paranoia level directly in `waf/config.d/convox-exclusions.conf` instead. To change the paranoia level, edit that file — do not rely on the `PARANOIA` env var.
+**Why not `DetectionOnly`?** The Coraza WAF engine has a bug where `skipAfter` flow-control actions — the mechanism CRS uses for paranoia level gating — do not execute in `DetectionOnly` mode. This causes all rules at all paranoia levels to fire regardless of your configured paranoia level, flooding logs with false positives. Using `On` mode with a high anomaly threshold gives the same log-only behavior but with correct paranoia gating.
+
+**Note on paranoia level:** The `PARANOIA` and `BLOCKING_PARANOIA` environment variables are passed to the image's entrypoint script but have known issues with CRS v4 variable names. This example sets the paranoia level directly in `waf/plugins/paranoia-before.conf` as the authoritative control. To change the paranoia level, edit that file and update the `setvar` values.
 
 ### Recommended Rollout
 
-1. **Start in detection-only mode** (the default):
+1. **Start in tuning mode** (the default). The rule engine is `On` but the anomaly threshold is set to `999999` so nothing gets blocked:
 ```yaml
     environment:
-      - CORAZA_RULE_ENGINE=DetectionOnly
-      - PARANOIA=1
+      - CORAZA_RULE_ENGINE=On
+      - ANOMALY_INBOUND=999999
 ```
 
 2. **Watch the logs** for what Coraza flags:
 ```bash
-convox logs -a coraza-waf | grep "transaction"
+convox logs -a coraza-waf | grep "paranoia-level"
 ```
 
 3. **Tune out false positives** by adding custom rule exclusions (see [Custom Rules](#custom-rules) below).
 
-4. **Enable enforcement**:
+4. **Enable enforcement** by lowering the anomaly threshold to `5` (the CRS default):
 ```bash
-convox env set CORAZA_RULE_ENGINE=On -a coraza-waf
+convox env set ANOMALY_INBOUND=5 -a coraza-waf
 ```
 
-5. **Raise paranoia level** once stable — edit `waf/config.d/convox-exclusions.conf` and change both values to `2`, then redeploy:
+5. **Raise paranoia level** once stable — edit `waf/plugins/paranoia-before.conf` and change both values to `2`, then redeploy:
 ```
 SecAction "id:1000002,phase:1,nolog,pass,t:none,setvar:tx.blocking_paranoia_level=2,setvar:tx.detection_paranoia_level=2"
 ```
@@ -129,10 +131,13 @@ services:
   waf:
     build: ./waf
     port: 8080
-    health: /
+    health:
+      path: /health
+      interval: 10
+      timeout: 9
     environment:
-      - CORAZA_RULE_ENGINE=DetectionOnly
-      - PARANOIA=1
+      - CORAZA_RULE_ENGINE=On
+      - ANOMALY_INBOUND=999999
       - BACKEND=web:3000
       - PORT=8080
     scale:
@@ -146,16 +151,19 @@ services:
 
 Point `BACKEND` to your service name and port. Convox configures DNS search domains on every pod, so the bare service name resolves automatically within the same app — no need for a fully-qualified domain name.
 
+**Health check tip:** Point the health check at a lightweight backend endpoint (like `/health`) rather than `/` to avoid the health check going through full WAF inspection and hitting any backend rate limiting.
+
 ## Custom Rules
 
-The WAF image supports two directories for customization, loaded at different times:
+The WAF image supports three directories for customization, loaded at different times:
 
 | Directory | Loaded | Use For |
 |-----------|--------|---------|
-| `/opt/coraza/config.d/` | **Before** CRS rules | Rule exclusions (`ctl:ruleRemoveById`) |
+| `/opt/coraza/config.d/` | **Before** `crs-setup.conf` | Rule exclusions (`ctl:ruleRemoveById`) |
+| `/opt/coraza/plugins/` | **After** `crs-setup.conf`, **before** CRS rules | Paranoia level overrides |
 | `/opt/coraza/rules.d/` | **After** CRS rules | Additional rules, blanket removals |
 
-This distinction matters: conditional exclusions using `ctl:ruleRemoveById` must go in `config.d/` so they load before the rules they're suppressing. Putting them in `rules.d/` will not work.
+This distinction matters: conditional exclusions using `ctl:ruleRemoveById` must go in `config.d/` so they load before the rules they're suppressing. Paranoia level settings must go in `plugins/` so they load after `crs-setup.conf` (which would otherwise overwrite them) but before the CRS rules evaluate them.
 
 ### Included Exclusions
 
@@ -202,9 +210,11 @@ Note: if your exclusion uses `ctl:ruleRemoveById` or `ctl:ruleRemoveTargetById`,
 waf/
 ├── Dockerfile                              # Extends the base Coraza CRS image
 ├── config.d/
-│   └── convox-exclusions.conf              # Platform exclusions (loaded before CRS)
+│   └── convox-exclusions.conf              # Platform exclusions (loaded before crs-setup.conf)
+├── plugins/
+│   └── paranoia-before.conf                # Paranoia level override (loaded after crs-setup.conf)
 └── custom-rules/
-    └── application-exclusions.conf         # Your app-specific exclusions (loaded after CRS)
+    └── application-exclusions.conf         # Your app-specific exclusions (loaded after CRS rules)
 ```
 
 On startup you'll see confirmation that both directories were loaded:
@@ -221,8 +231,10 @@ On startup you'll see confirmation that both directories were loaded:
 ├── convox.yml              # Convox deployment configuration
 ├── waf/
 │   ├── Dockerfile          # Extends Coraza CRS with custom rules
-│   ├── config.d/           # Rule exclusions (loaded before CRS rules)
+│   ├── config.d/           # Rule exclusions (loaded before crs-setup.conf)
 │   │   └── convox-exclusions.conf
+│   ├── plugins/            # Paranoia level override (loaded after crs-setup.conf)
+│   │   └── paranoia-before.conf
 │   └── custom-rules/       # Additional rules (loaded after CRS rules)
 │       └── application-exclusions.conf
 └── backend/
